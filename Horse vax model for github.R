@@ -3,7 +3,7 @@
 # This code simulates the population of horses in Canada and by province, and  # 
 # estimates the proportion of horses vaccinated for West Nile virus.           #
 #                                                                              #
-# Author: Pascale Aubry                                                        #
+# Author: Pascale Aubry (with help from Josh Persi)                            #
 #                                                                              #
 ################################################################################
 
@@ -11,23 +11,20 @@
 library(here)
 library(mc2d)
 library(tidyverse)
-library(ggplot2)
 
-#Load the distribution parameters
+#Load the distribution parameters by province
 dist_pars <- 
   read.csv(here::here("Horse_vax_data.csv"))
 
-#Distribution parameters for the proportion of horses getting vaccinated for the first time
+#The proportion of horses vaccinated for the first time is represented by a pert distribution
+# The same distribution is repeated for all provinces.
 primo_min <- 0.05
 primo_ML <- 0.1
 primo_max <- 0.15
 
 #######################################################################################################
 
-#The proportion of horses vaccinated for the first time is represented by a pert distribution
-# The same distribution is repeated for all provinces.
-
-#Then the distribution of the number of doses sold/administered, and the distribution
+#The distribution of the number of doses sold/administered, and the distribution
 # of the horse population are generated for each province.
 
 # This is done using purrr:map() to iterate over the number of iterations, and for each
@@ -43,7 +40,7 @@ primo_max <- 0.15
 
 set.seed(1234)
 
-n_iter <- 10
+n_iter <- 100
 
 #The probability of primo vaccination is the same for all provinces
 prob_primo <- 
@@ -122,19 +119,18 @@ results <-
             output_Canada) %>% 
   select(-doses, -primo)
 
+# Summary function to obtain median, mean, 95% and 99% confidence interval
 my_summary <- function(arg1)  {
   min <- min(arg1, na.rm=TRUE)
   P0.5 <- quantile(arg1, probs=.005, na.rm=TRUE)
   P2.5 <- quantile(arg1, probs=.0255, na.rm=TRUE)
-  P25 <- quantile(arg1, probs=.25, na.rm=TRUE)
   med <- median(arg1, na.rm=TRUE)
   m <- mean(arg1, na.rm=TRUE)
-  P75 <- quantile(arg1, probs=.75, na.rm=TRUE)
   P97.5 <- quantile(arg1, probs=.975, na.rm=TRUE)
   P99.5 <- quantile(arg1, probs=.995, na.rm=TRUE)
   max <- max(arg1, na.rm=TRUE)
-  data.frame(Min.=min, P0.5=P0.5, P2.5 =P2.5 , P25=P25, Med.=med, 
-             Mean = m, P75=P75, P97.5=P97.5, P99.5=P99.5, Max.=max) 
+  data.frame(Min.=min, P0.5=P0.5, P2.5 =P2.5 , Med.=med, 
+             Mean = m, P97.5=P97.5, P99.5=P99.5, Max.=max) 
 }
 
 #Summary stats for proportion vaccinated, by region
@@ -147,48 +143,66 @@ results %>%
   group_by(region)   %>% 
   summarise(as_tibble(rbind(my_summary(horse_pop))))
 
-#Obtain all the pairwise differences in proportion vaccinated (between provinces)
-prop_vax_diff  <-
-  results %>% 
-  select(iter,region, prop_vax) %>% 
-  pivot_wider(
-    names_from = region,
-    values_from = prop_vax
-  ) %>% 
-  transmute(
-    BC_AB = BC - AB,
-    BC_SK = BC - SK,
-    BC_MB = BC - MB,
-    BC_ON = BC - ON,
-    BC_QC = BC - QC,
-    BC_Atlantic = BC - Atlantic,
-    AB_SK = AB - SK,
-    AB_MB = AB - MB,
-    AB_ON = AB - ON,
-    AB_QC = AB - QC,
-    AB_Atlantic = AB - Atlantic,
-    SK_MB = SK - MB,
-    SK_ON = SK - ON,
-    SK_QC = SK - QC,
-    SK_Atlantic = SK - Atlantic,
-    MB_ON = MB - ON,
-    MB_QC = MB - QC,
-    MB_Atlantic = MB - Atlantic,
-    ON_QC = ON - QC,
-    ON_Atlantic = ON - Atlantic,
-    QC_Atlantic = QC - Atlantic,
-  ) %>% 
-  pivot_longer(
-    cols =  everything(),
-    names_to = "pairs",
-    values_to = "diff"
+
+#Get the number of unique pairwise combinations of regions
+n_pairs <-
+  length(
+    combn(
+      dist_pars$region, 
+      m=2, 
+      simplify = FALSE)
   )
+
+# Obtain all the pairwise differences in proportion vaccinated (between provinces)
+prop_vax_diff <- results %>%
+  filter(region != "Canada") %>% 
+  # Nest and fully cross the data
+  nest(data = prop_vax, .by = region) %>%
+  expand(
+    nesting(reference_region = region, reference_data = data),
+    nesting(comparison_region = region, comparison_data = data)
+  ) %>%
+  # Remove records where the reference region and the comparison region are the
+  # same (i.e. diff == 0)
+  filter(reference_region != comparison_region) %>%
+  # From each value of prop_vax per reference region, subtract each value
+  # of prop_vax per comparison region
+  mutate(difference = map2(reference_data, comparison_data, \(x, y) x - y)) %>%
+  # Unnest the difference data
+  unnest(difference) %>%
+  # Select the relevant columns and rename the prop_vax column to show
+  # it is a difference
+  select(reference_region, comparison_region, prop_vax_diff = prop_vax) %>%
+  # Group data by row
+  rowwise() %>%
+  # Per row, combine reference and comparison regions, sort them alphabetically,
+  # and concatenate them so AB-Atlantic and Atlantic-AB comparisons both read
+  # AB-Atlantic
+  mutate(
+    comparison_id = 
+      list(c(reference_region, comparison_region)) %>%
+      map_chr(
+        \(x) x %>%
+          str_sort() %>%
+          str_c(collapse = "-")
+      )
+  ) %>%
+  # Ungroup the dataset
+  ungroup() %>%
+  # Add the iteration number
+  mutate(iter = rep(1:n_iter, times = 2 *n_pairs)) %>% 
+  # Only keep unique comparison IDs
+  group_by(iter,comparison_id) %>% 
+  distinct(comparison_id, .keep_all = TRUE)
 
 #Summary stats for pairwise differences in proportion vaccinated
 summary_prop_vax_diff <-
   prop_vax_diff %>% 
-  group_by(pairs)   %>% 
-  summarise(as_tibble(rbind(my_summary(diff))))
+  group_by(comparison_id)   %>% 
+  summarise(
+    as_tibble(
+      rbind(
+        my_summary(prop_vax_diff))))
 
 #Find the pairs for which zero is NOT included in the interval [P0.5, P99.5] 
 #These are the ones for which the prop_vax difference is statistically significant  
