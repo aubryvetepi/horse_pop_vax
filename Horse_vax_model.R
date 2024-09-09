@@ -18,9 +18,8 @@ dist_pars <-
 
 #The proportion of horses vaccinated for the first time is represented by a pert distribution
 # The same distribution is repeated for all provinces.
-primo_min <- 0.05
-primo_ML <- 0.1
-primo_max <- 0.15
+primo_min <- 0
+primo_max <- 0.1
 
 #######################################################################################################
 
@@ -44,7 +43,7 @@ n_iter <- 100
 
 #The probability of primo vaccination is the same for all provinces
 prob_primo <- 
-  rpert(n_iter, primo_min, primo_ML, primo_max)
+  runif(n_iter, primo_min, primo_max)
 
 #The number of doses and horse population is estimated for each province
 dist_pars <- 
